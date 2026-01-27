@@ -1,0 +1,646 @@
+/**
+ * Дашборд тренера - аналитика и управление клиентами
+ */
+
+import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { motion } from 'framer-motion';
+import { useAppStore } from '../../store/useAppStore';
+import { useAuthStore } from '../../store/useAuthStore';
+import Button from '../../components/ui/Button';
+import TelegramIcon from '../../components/ui/TelegramIcon';
+import type { Client } from '../../data/models/types';
+import { ClientGoal, Equipment } from '../../data/models/types';
+import { ROUTES } from '../../router/routes';
+import { fetchChatIdByUsername, saveClient } from '../../lib/supabaseProfiles';
+import { sendTelegramMessage } from '../../config/telegram';
+
+export default function TrainerDashboard() {
+  const navigate = useNavigate();
+  const allClients = useAppStore((state) => state.clients || []);
+  const addClient = useAppStore((state) => state.addClient);
+  const addToast = useAppStore((state) => state.addToast);
+  const currentUser = useAuthStore((state) => state.user);
+  
+  // Фильтруем клиентов по тренеру
+  const clients = allClients.filter(client => client.assignedTrainerId === currentUser?.id);
+  
+  const [showAIAnalysis, setShowAIAnalysis] = useState(false);
+  const [showTelegramAdd, setShowTelegramAdd] = useState(false);
+  const [telegramUsername, setTelegramUsername] = useState('');
+  
+  // Статистика тренера
+  const stats = useMemo(() => {
+    const totalClients = clients.length;
+    
+    // Тренировки за последние 7 дней (из истории всех клиентов)
+    const weekAgo = new Date();
+    weekAgo.setDate(weekAgo.getDate() - 7);
+    
+    const workoutsLastWeek = clients.reduce((sum, client) => {
+      const history = client.workoutHistory || client.completedWorkouts || [];
+      const recentWorkouts = history.filter((w) => {
+        const workoutDate = new Date(w.date);
+        return workoutDate >= weekAgo;
+      });
+      return sum + recentWorkouts.length;
+    }, 0);
+    
+    // Процент успеваемости (выполненные / назначенные)
+    // Считаем назначенные тренировки на неделю
+    const totalAssignedWorkouts = clients.reduce((sum, client) => {
+      const weeklyPlan = client.weeklyPlan || {};
+      const daysWithPlan = Object.values(weeklyPlan).filter(day => day && day.length > 0).length;
+      return sum + daysWithPlan;
+    }, 0);
+    
+    const completionRate = totalAssignedWorkouts > 0
+      ? Math.round((workoutsLastWeek / totalAssignedWorkouts) * 100)
+      : 0;
+    
+    return {
+      totalClients,
+      workoutsLastWeek,
+      completionRate,
+    };
+  }, [clients]);
+
+  // Функция для определения статуса клиента
+  const getClientStatus = (client: Client): { label: string; color: string; bg: string } => {
+    const completedWorkouts = client.completedWorkouts || [];
+    const weeklyPlan = client.weeklyPlan || {};
+    
+    // Проверяем, есть ли план на текущую неделю
+    const hasCurrentWeekPlan = Object.values(weeklyPlan).some(day => day && day.length > 0);
+    
+    if (!hasCurrentWeekPlan) {
+      return {
+        label: 'Нужно внимание',
+        color: '#ef4444',
+        bg: 'rgba(239, 68, 68, 0.2)',
+      };
+    }
+    
+    if (completedWorkouts.length === 0) {
+      return {
+        label: 'Нужно внимание',
+        color: '#ef4444',
+        bg: 'rgba(239, 68, 68, 0.2)',
+      };
+    }
+    
+    // Находим последнюю тренировку
+    const lastWorkout = completedWorkouts
+      .map(w => ({ date: new Date(w.date), workout: w }))
+      .sort((a, b) => b.date.getTime() - a.date.getTime())[0];
+    
+    if (!lastWorkout) {
+      return {
+        label: 'Нужно внимание',
+        color: '#ef4444',
+        bg: 'rgba(239, 68, 68, 0.2)',
+      };
+    }
+    
+    const daysSinceLastWorkout = Math.floor(
+      (new Date().getTime() - lastWorkout.date.getTime()) / (1000 * 60 * 60 * 24)
+    );
+    
+    if (daysSinceLastWorkout <= 3) {
+      return {
+        label: 'Активен',
+        color: '#4ade80',
+        bg: 'rgba(74, 222, 128, 0.2)',
+      };
+    } else if (daysSinceLastWorkout <= 5) {
+      return {
+        label: 'Засыпает',
+        color: '#eab308',
+        bg: 'rgba(234, 179, 8, 0.2)',
+      };
+    } else {
+      return {
+        label: 'Нужно внимание',
+        color: '#ef4444',
+        bg: 'rgba(239, 68, 68, 0.2)',
+      };
+    }
+  };
+
+  const handleAddClient = () => {
+    navigate(ROUTES.TRAINER.ADD_CLIENT);
+  };
+
+  const handleTelegramAdd = async () => {
+    if (!telegramUsername.trim()) {
+      addToast({ type: 'error', message: 'Введите username' });
+      return;
+    }
+
+    const username = telegramUsername.trim().replace('@', '');
+    
+    // Создаём временного клиента
+    const tempClientId = `temp-${Date.now()}`;
+    const tempClient: Client = {
+      id: tempClientId,
+      name: `Пользователь ${username}`,
+      age: 25,
+      goal: ClientGoal.MuscleGain,
+      equipment: Equipment.Gym,
+      telegramUsername: username,
+      assignedTrainerId: currentUser?.id,
+      isFirstLogin: true,
+    };
+
+    // Сохраняем в локальном store
+    addClient(tempClient);
+
+    // Отправляем приглашение
+    const chatId = await fetchChatIdByUsername(username);
+    if (chatId) {
+      const message = `Привет! Тренер приглашает вас в фитнес-сервис OFT.\n\nПодтвердите участие:`;
+      const replyMarkup = {
+        inline_keyboard: [
+          [
+            { text: '✅ Принять', callback_data: `accept_${tempClientId}` },
+            { text: '❌ Отклонить', callback_data: `decline_${tempClientId}` }
+          ]
+        ]
+      };
+      const sendResult = await sendTelegramMessage(chatId, message, { reply_markup: replyMarkup });
+      if (sendResult.ok) {
+        addToast({ type: 'success', message: 'Приглашение отправлено!' });
+      } else {
+        addToast({ type: 'error', message: 'Ошибка отправки приглашения' });
+      }
+    } else {
+      addToast({ type: 'warning', message: 'Пользователь не найден в боте. Попросите написать /start' });
+    }
+
+    // Синхронизируем с Supabase
+    saveClient(tempClient);
+
+    setShowTelegramAdd(false);
+    setTelegramUsername('');
+  };
+
+  // Функция для форматирования цели клиента
+  const getGoalLabel = (goal: ClientGoal): string => {
+    const labels: Record<ClientGoal, string> = {
+      [ClientGoal.WeightLoss]: 'Похудение',
+      [ClientGoal.MuscleGain]: 'Набор массы',
+      [ClientGoal.Endurance]: 'Выносливость',
+      [ClientGoal.Strength]: 'Сила',
+    };
+    return labels[goal] ?? goal;
+  };
+
+  // Функция для форматирования оборудования
+  const getEquipmentLabel = (equipment: Equipment): string => {
+    const labels = {
+      [Equipment.Gym]: 'Тренажерный зал',
+      [Equipment.Home]: 'Дома',
+    };
+    return labels[equipment] || equipment;
+  };
+
+  // Пустое состояние
+  if (clients.length === 0) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-6 animate-fade-in">
+        <div className="card max-w-md text-center w-full">
+          <div className="text-7xl mb-6 animate-float">🏋️‍♂️</div>
+          <h2 className="text-2xl font-bold mb-3">Ваш зал пока пуст</h2>
+          <p className="mb-8 text-base" style={{ color: 'var(--color-text-secondary)' }}>
+            Добавьте первого клиента, чтобы начать работу. Создайте базу подопечных и начните составлять персональные планы тренировок!
+          </p>
+          <Button onClick={handleAddClient} className="w-full">
+            ➕ Создать первого клиента
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-7xl mx-auto p-6 safe-area-bottom">
+      {/* Заголовок */}
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-8 gap-4 animate-fade-in">
+        <div>
+          <h1 className="text-4xl font-bold mb-2">
+            Дашборд тренера
+          </h1>
+          <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>
+            Аналитика и управление клиентами
+          </p>
+        </div>
+        <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+          <Button
+            onClick={() => setShowAIAnalysis(!showAIAnalysis)}
+            className="w-full sm:w-auto"
+            style={{
+              background: showAIAnalysis
+                ? 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)'
+                : undefined,
+              border: showAIAnalysis ? '1px solid rgba(99, 102, 241, 0.5)' : undefined,
+            }}
+          >
+            ✨ Анализ клиентов ИИ
+          </Button>
+          <Button onClick={() => setShowTelegramAdd(true)} className="w-full sm:w-auto">
+            📱 Добавить из Telegram
+          </Button>
+          <Button onClick={handleAddClient} className="w-full sm:w-auto">
+            ➕ Добавить клиента
+          </Button>
+        </div>
+      </div>
+
+      {/* ИИ-анализ клиентов */}
+      {showAIAnalysis && (
+        <div
+          className="mb-8 p-6 rounded-2xl animate-fade-in"
+          style={{
+            background: 'linear-gradient(135deg, rgba(99, 102, 241, 0.15) 0%, rgba(139, 92, 246, 0.15) 100%)',
+            border: '1px solid rgba(99, 102, 241, 0.3)',
+          }}
+        >
+          <div className="flex items-start gap-3 mb-4">
+            <span className="text-3xl">✨</span>
+            <div className="flex-1">
+              <h3 className="font-bold text-lg mb-2" style={{ color: '#a78bfa' }}>
+                Анализ клиентов от ИИ
+              </h3>
+              <AIClientsAnalysis clients={clients} />
+            </div>
+            <button
+              onClick={() => setShowAIAnalysis(false)}
+              className="p-1 rounded-lg hover:bg-white/10 transition-colors"
+              aria-label="Закрыть анализ"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Статистика тренера */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+        {/* Всего подопечных */}
+        <div 
+          className="card animate-fade-in"
+          style={{ 
+            animationDelay: '0.1s',
+            background: 'linear-gradient(135deg, rgba(24, 24, 27, 0.9) 0%, rgba(255, 82, 82, 0.1) 100%)',
+            border: '1px solid rgba(255, 82, 82, 0.2)',
+          }}
+        >
+          <div className="flex items-center gap-4">
+            <div 
+              className="text-4xl p-3 rounded-xl"
+              style={{
+                backgroundColor: 'rgba(255, 82, 82, 0.2)',
+                color: '#FF5252',
+              }}
+            >
+              👥
+            </div>
+            <div>
+              <p className="text-sm mb-1" style={{ color: 'var(--color-text-secondary)' }}>
+                Всего подопечных
+              </p>
+              <p className="text-3xl font-bold" style={{ color: '#FF5252' }}>
+                {stats.totalClients}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Тренировок за неделю */}
+        <div 
+          className="card animate-fade-in"
+          style={{ 
+            animationDelay: '0.2s',
+            background: 'linear-gradient(135deg, rgba(24, 24, 27, 0.9) 0%, rgba(255, 82, 82, 0.1) 100%)',
+            border: '1px solid rgba(255, 82, 82, 0.2)',
+          }}
+        >
+          <div className="flex items-center gap-4">
+            <div 
+              className="text-4xl p-3 rounded-xl"
+              style={{
+                backgroundColor: 'rgba(255, 82, 82, 0.2)',
+                color: '#FF5252',
+              }}
+            >
+              💪
+            </div>
+            <div>
+              <p className="text-sm mb-1" style={{ color: 'var(--color-text-secondary)' }}>
+                Тренировок за неделю
+              </p>
+              <p className="text-3xl font-bold" style={{ color: '#FF5252' }}>
+                {stats.workoutsLastWeek}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* % Успеваемости */}
+        <div 
+          className="card animate-fade-in"
+          style={{ 
+            animationDelay: '0.3s',
+            background: 'linear-gradient(135deg, rgba(24, 24, 27, 0.9) 0%, rgba(255, 82, 82, 0.1) 100%)',
+            border: '1px solid rgba(255, 82, 82, 0.2)',
+          }}
+        >
+          <div className="flex items-center gap-4">
+            <div 
+              className="text-4xl p-3 rounded-xl"
+              style={{
+                backgroundColor: 'rgba(255, 82, 82, 0.2)',
+                color: '#FF5252',
+              }}
+            >
+              📊
+            </div>
+            <div>
+              <p className="text-sm mb-1" style={{ color: 'var(--color-text-secondary)' }}>
+                Успеваемость
+              </p>
+              <p className="text-3xl font-bold" style={{ color: '#FF5252' }}>
+                {stats.completionRate}%
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Список клиентов */}
+      <div>
+        <h2 className="text-2xl font-bold mb-4">Мои клиенты</h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {clients.map((client: Client, index: number) => (
+            <ClientCard
+              key={client.id}
+              client={client}
+              index={index}
+              getGoalLabel={getGoalLabel}
+              getEquipmentLabel={getEquipmentLabel}
+              getClientStatus={getClientStatus}
+            />
+          ))}
+        </div>
+      </div>
+
+      {/* Floating Action Button для мобильных */}
+      <button
+        onClick={handleAddClient}
+        className="fixed bottom-24 right-6 md:hidden z-40 w-14 h-14 rounded-full btn-primary flex items-center justify-center text-2xl shadow-xl animate-scale-in"
+        style={{
+          boxShadow: '0 8px 16px -4px rgba(255, 68, 68, 0.4), 0 4px 8px -2px rgba(255, 68, 68, 0.3)',
+        }}
+        aria-label="Добавить клиента"
+      >
+        ➕
+      </button>
+    </div>
+  );
+}
+
+/**
+ * Карточка клиента
+ */
+interface ClientCardProps {
+  client: Client;
+  index: number;
+  getGoalLabel: (goal: ClientGoal) => string;
+  getEquipmentLabel: (equipment: Equipment) => string;
+  getClientStatus: (client: Client) => { label: string; color: string; bg: string };
+}
+
+function ClientCard({ client, index, getGoalLabel, getEquipmentLabel, getClientStatus }: ClientCardProps) {
+  const navigate = useNavigate();
+  const selectClient = useAppStore((state) => state.selectClient);
+  const deleteClient = useAppStore((state) => state.deleteClient);
+  const addToast = useAppStore((state) => state.addToast);
+
+  const handleCardClick = () => {
+    selectClient(client.id);
+    navigate(ROUTES.TRAINER.CLIENT_PROFILE(client.id));
+  };
+
+  const handleAssignPlan = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    navigate(ROUTES.TRAINER.ASSIGN_WORKOUT(client.id));
+  };
+
+  const handleViewDetails = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    selectClient(client.id);
+    navigate(ROUTES.TRAINER.CLIENT_PROFILE(client.id));
+  };
+
+  const handleDelete = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (confirm(`Вы уверены, что хотите удалить клиента "${client.name}"?`)) {
+      deleteClient(client.id);
+      addToast({
+        type: 'success',
+        message: `Клиент "${client.name}" успешно удален`,
+      });
+    }
+  };
+
+  const status = getClientStatus(client);
+  
+  // Количество тренировок в истории
+  const historyCount = client.workoutHistory?.length || client.completedWorkouts?.length || 0;
+
+  return (
+    <motion.div
+      className="card-hover relative"
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: index * 0.1 }}
+      whileHover={{ scale: 1.02 }}
+      whileTap={{ scale: 0.98 }}
+    >
+      <div className="space-y-4">
+        {/* Заголовок с именем и кнопкой удаления */}
+        <div className="flex items-start justify-between">
+          <div 
+            className="flex-1 cursor-pointer"
+            onClick={handleCardClick}
+          >
+            <div className="flex items-center gap-2 mb-2">
+              <h3 className="text-xl font-bold">{client.name}</h3>
+              {/* Иконка Telegram */}
+              <div
+                title={client.isTelegramLinked || client.telegramId ? 'Telegram привязан' : 'Telegram не привязан'}
+                style={{
+                  opacity: client.isTelegramLinked || client.telegramId ? 1 : 0.3,
+                  filter: client.isTelegramLinked || client.telegramId ? 'none' : 'grayscale(100%)',
+                }}
+              >
+                <TelegramIcon 
+                  size={20} 
+                  color={client.isTelegramLinked || client.telegramId ? '#26A5E4' : '#666'} 
+                />
+              </div>
+            </div>
+            {client.age && (
+              <p className="text-sm" style={{ color: 'var(--color-text-secondary)' }}>
+                {client.age} лет
+              </p>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <span
+              className="badge-primary text-xs px-2 py-1 rounded-full font-medium"
+              style={{
+                backgroundColor: status.bg,
+                color: status.color,
+                border: `1px solid ${status.color}33`,
+              }}
+            >
+              {status.label}
+            </span>
+            <button
+              onClick={handleDelete}
+              className="p-2 rounded-lg hover:bg-[var(--color-card-hover)] transition-colors"
+              aria-label="Удалить клиента"
+              style={{ color: 'var(--color-error)' }}
+            >
+              🗑️
+            </button>
+          </div>
+        </div>
+
+        {/* Информация о клиенте */}
+        <div className="space-y-2" onClick={handleCardClick} style={{ cursor: 'pointer' }}>
+          <div className="flex items-center justify-between text-sm">
+            <span style={{ color: 'var(--color-text-secondary)' }}>Цель:</span>
+            <span className="font-medium">{getGoalLabel(client.goal)}</span>
+          </div>
+          <div className="flex items-center justify-between text-sm">
+            <span style={{ color: 'var(--color-text-secondary)' }}>Оборудование:</span>
+            <span className="font-medium">{getEquipmentLabel(client.equipment)}</span>
+          </div>
+        </div>
+
+        {/* Разделитель */}
+        <div className="divider" />
+
+        {/* Статус и кнопки */}
+        <div className="flex gap-2">
+          <Button
+            onClick={handleAssignPlan}
+            variant="primary"
+            className="flex-1"
+          >
+            {client.weeklyPlan && Object.values(client.weeklyPlan).some(day => day && day.length > 0)
+              ? '✏️ План'
+              : '➕ План'}
+          </Button>
+          
+          {/* Кнопка Подробнее */}
+          <Button
+            onClick={handleViewDetails}
+            variant="secondary"
+            className="flex-1"
+          >
+            <span className="flex items-center justify-center gap-1">
+              <span>📋</span>
+              <span>Подробнее</span>
+              {historyCount > 0 && (
+                <span
+                  className="px-1.5 py-0.5 rounded-full text-xs font-bold ml-1"
+                  style={{
+                    backgroundColor: 'rgba(255, 82, 82, 0.2)',
+                    color: 'var(--color-accent)',
+                  }}
+                >
+                  {historyCount}
+                </span>
+              )}
+            </span>
+          </Button>
+        </div>
+      </div>
+    </motion.div>
+
+  return (
+    <>
+      {/* Модальное окно для добавления из Telegram */}
+      {showTelegramAdd && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.9 }}
+            className="max-w-md w-full"
+          >
+            <div
+              className="p-6 rounded-2xl"
+              style={{
+                backgroundColor: 'var(--color-background)',
+                border: '1px solid var(--color-border)',
+              }}
+            >
+              <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
+                <span>📱</span>
+                Добавить из Telegram
+              </h3>
+              
+              <p className="text-sm mb-4" style={{ color: 'var(--color-text-secondary)' }}>
+                Введите username клиента в Telegram (без @). Клиент получит приглашение в сервис.
+              </p>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium mb-2">
+                    Telegram Username
+                  </label>
+                  <input
+                    type="text"
+                    value={telegramUsername}
+                    onChange={(e) => setTelegramUsername(e.target.value.replace('@', ''))}
+                    placeholder="username"
+                    className="w-full px-4 py-3 rounded-lg border focus:outline-none focus:ring-2"
+                    style={{
+                      backgroundColor: 'var(--color-background-secondary)',
+                      borderColor: 'var(--color-border)',
+                      color: 'var(--color-text)',
+                    }}
+                  />
+                </div>
+
+                <div className="flex gap-3">
+                  <Button
+                    onClick={() => {
+                      setShowTelegramAdd(false);
+                      setTelegramUsername('');
+                    }}
+                    variant="secondary"
+                    className="flex-1"
+                  >
+                    Отмена
+                  </Button>
+                  <Button
+                    onClick={handleTelegramAdd}
+                    className="flex-1"
+                    disabled={!telegramUsername.trim()}
+                  >
+                    📤 Отправить приглашение
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        </div>
+      )}
+    </>
+  );
+}

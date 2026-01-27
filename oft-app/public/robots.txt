@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+
+# Disallow demo pages
+Disallow: /demo/
+
+# Sitemap (замените на ваш домен)
+Sitemap: https://yoursite.com/sitemap.xml

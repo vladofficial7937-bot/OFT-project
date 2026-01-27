@@ -1,0 +1,16 @@
+# Replit App Configuration — OFT (Онлайн Фитнес Тренер)
+# https://docs.replit.com/replit-app/configuration
+
+run = "npm run dev"
+entrypoint = "package.json"
+language = "nodejs"
+
+[nix]
+channel = "stable-24_11"
+
+[deployment]
+run = ["sh", "-c", "npm run build && npx serve dist -s -l ${PORT:-3000}"]
+deploymentTarget = "cloudrun"
+
+[env]
+# Replit sets PORT automatically; Vite reads it from vite.config.ts

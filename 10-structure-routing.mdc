@@ -1,0 +1,18 @@
+---
+description: Routing + project structure
+ruleType: always
+---
+
+# Структура и роутинг (Expo Router)
+
+- Все маршруты только в папке app/ (или src/app если выберем src-структуру).
+- Не создавать кастомную навигацию “в обход” Expo Router.
+- Каждый экран = отдельный файл route в app/.
+- Переиспользуемые компоненты: src/components/*
+- Доменные модули: src/features/* (trainer, client, exercises, progress)
+- Доступ к данным: src/data/* (repositories, sqlite, seeds)
+
+Ориентир: Expo Router file-based routing (экраны — это файлы в app/). 
+---
+alwaysApply: true
+---
