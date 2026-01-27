@@ -1,3 +1,4 @@
+cd OFT-project
 ls
 tree -L 4
 cat README.md
