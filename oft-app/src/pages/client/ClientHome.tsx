@@ -17,7 +17,7 @@ export default function ClientHome() {
   const navigate = useNavigate();
   const [isAIChatOpen, setIsAIChatOpen] = useState(false);
   const [showTrainerModal, setShowTrainerModal] = useState(false);
-  const [trainers, setTrainers] = useState<{ id: string; first_name?: string; username: string; bio?: string }[]>([]);
+  const [trainers, setTrainers] = useState<{ id: string; first_name?: string; username: string }[]>([]);
   
   // Живое время
   const [currentTime, setCurrentTime] = useState(new Date());
@@ -37,7 +37,7 @@ export default function ClientHome() {
       try {
         const { data, error } = await supabase
           .from('profiles')
-          .select('id, first_name, username, bio')
+          .select('id, first_name, username')
           .eq('role', 'trainer');
         
         if (error) throw error;

@@ -1,350 +1,105 @@
-import { lazy, Suspense, useEffect, useState, useMemo, useRef } from 'react';
-import type { ReactNode } from 'react';
-import { BrowserRouter, Routes, Route, useLocation, Navigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
-import { useAppStore } from './store/useAppStore';
+import { useEffect, useState } from 'react';
+import { BrowserRouter } from 'react-router-dom';
 import { useAuthStore } from './store/useAuthStore';
-import { ROUTES } from './router/routes';
-import { isMiniApp } from './lib/telegramWebApp';
+import { isMiniApp, getTelegramWebApp } from './lib/telegramWebApp';
+import { fetchProfile } from './lib/supabaseProfiles';
 
-import Layout from './components/layout/Layout';
 import ToastContainer from './components/ui/ToastContainer';
-import Spinner from './components/ui/Spinner';
 import SplashCursor from './components/ui/SplashCursor';
 import MiniAppInit from './components/MiniAppInit';
-import AuthInit from './components/AuthInit';
-
-const StartPage = lazy(() => import('./pages/StartPage'));
-const TelegramAuth = lazy(() => import('./pages/auth/TelegramAuth'));
-const RoleSelectPage = lazy(() => import('./pages/auth/RoleSelectPage'));
-
-// Trainer pages - Lazy loaded
-const TrainerDashboard = lazy(() => import('./pages/trainer/TrainerDashboard'));
-const AddClientWizard = lazy(() => import('./pages/trainer/AddClientWizard'));
-const AssignWorkout = lazy(() => import('./pages/trainer/AssignWorkout'));
-const ClientProfile = lazy(() => import('./pages/trainer/ClientProfile'));
-
-// Client pages - Lazy loaded
-const ClientHome = lazy(() => import('./pages/client/ClientHome'));
-const Onboarding = lazy(() => import('./pages/client/Onboarding'));
-const Catalog = lazy(() => import('./pages/client/Catalog'));
-const ExerciseDetail = lazy(() => import('./pages/client/ExerciseDetail'));
-const TodayWorkout = lazy(() => import('./pages/client/TodayWorkout'));
-const Progress = lazy(() => import('./pages/client/Progress'));
-const Profile = lazy(() => import('./pages/client/Profile'));
-const WorkoutHistory = lazy(() => import('./pages/client/WorkoutHistory'));
-const MyPlan = lazy(() => import('./pages/client/MyPlan'));
-const Programs = lazy(() => import('./pages/client/Programs'));
-const WorkoutGenerator = lazy(() => import('./pages/client/WorkoutGenerator'));
-
-// Loading fallback component
-const LoadingFallback = () => (
-  <div 
-    className="min-h-screen flex items-center justify-center animate-fade-in"
-    style={{ 
-      background: 'linear-gradient(135deg, #0a0a0a 0%, #111111 50%, #0a0a0a 100%)'
-    }}
-  >
-    <div className="text-center">
-      <Spinner size="lg" />
-      <p 
-        className="mt-4 text-lg font-medium animate-pulse-once" 
-        style={{ color: 'var(--color-text-secondary)' }}
-      >
-        Загрузка...
-      </p>
-    </div>
-  </div>
-);
-
-/** Ожидание rehydrate persist перед проверкой авторизации */
-// Глобальный флаг готовности - инициализируется один раз
-let globalReadyState = false;
-let globalReadyTimer: ReturnType<typeof setTimeout> | null = null;
-const globalReadyListeners: Array<(v: boolean) => void> = [];
-
-function useAuthReady() {
-  const [ready, setReady] = useState(globalReadyState);
-
-  useEffect(() => {
-    // If already ready, ensure state is true
-    if (globalReadyState) {
-      if (!ready) setReady(true);
-      return;
-    }
-
-    // Register listener to be notified when global becomes ready
-    const listener = (v: boolean) => {
-      if (v) setReady(true);
-    };
-    globalReadyListeners.push(listener);
-
-    // Start a single global timer to flip ready state (only once)
-    if (!globalReadyTimer) {
-      globalReadyTimer = setTimeout(() => {
-        globalReadyState = true;
-        // notify all listeners
-        globalReadyListeners.forEach((l) => {
-          try {
-            l(true);
-          } catch (e) {
-            // ignore listener errors
-          }
-        });
-        // clear timer reference
-        globalReadyTimer = null;
-      }, 280);
-    }
-
-    return () => {
-      // remove listener on unmount
-      const idx = globalReadyListeners.indexOf(listener);
-      if (idx !== -1) globalReadyListeners.splice(idx, 1);
-    };
-  }, [ready]);
-
-  return ready;
-}
-
-function AuthGuard({ children }: { children: ReactNode }) {
-  const location = useLocation();
-  const ready = useAuthReady();
-  const isAuth = useAuthStore((s) => s.isAuthenticated);
-  const role = useAuthStore((s) => s.role);
-
-  if (!ready) return <LoadingFallback />;
-
-  if (isAuth && role === 'client' && location.pathname === '/auth/telegram') {
-    return <Navigate to={ROUTES.CLIENT.HOME} replace />;
-  }
-
-  return <>{children}</>;
-}
-
-function ClientRouteGuard({ children }: { children: ReactNode }) {
-  const activeClient = useAppStore((s) => s.activeClient);
-  const clients = useAppStore((s) => s.clients || []);
-  const client = activeClient || clients[0];
-  const location = useLocation();
-  const hasRedirectedRef = useRef(false);
-
-  // Разрешаем доступ к onboarding без проверок
-  if (location.pathname === '/client/onboarding') {
-    hasRedirectedRef.current = false;
-    return <>{children}</>;
-  }
-  
-  if (!client) return <>{children}</>;
-  
-  // Проверяем isFirstLogin только если он явно true (не undefined и не false)
-  // Предотвращаем бесконечные редиректы
-  if (client.isFirstLogin === true && !hasRedirectedRef.current) {
-    hasRedirectedRef.current = true;
-    return <Navigate to="/client/onboarding" replace />;
-  }
-  
-  hasRedirectedRef.current = false;
-  return <>{children}</>;
-}
-
-function TrainerRouteGuard({ children }: { children: ReactNode }) {
-  const ready = useAuthReady();
-  const isAuth = useAuthStore((s) => s.isAuthenticated);
-  const role = useAuthStore((s) => s.role);
-  if (!ready) return <LoadingFallback />;
-  if (!isAuth || role !== 'trainer') {
-    return <Navigate to={ROUTES.HOME} replace />;
-  }
-  return <>{children}</>;
-}
-
-function ClientRouteGuardByAuth({ children }: { children: ReactNode }) {
-  const ready = useAuthReady();
-  const isAuth = useAuthStore((s) => s.isAuthenticated);
-  const role = useAuthStore((s) => s.role);
-  if (!ready) return <LoadingFallback />;
-  if (!isAuth || role !== 'client') {
-    return <Navigate to={ROUTES.HOME} replace />;
-  }
-  return <>{children}</>;
-}
-
-function AppRoutes() {
-  const location = useLocation();
-  const isAuth = useAuthStore((s) => s.isAuthenticated);
-  const role = useAuthStore((s) => s.role);
-  const ready = useAuthReady();
-  const hasRedirectedRef = useRef(false);
-  const lastPathRef = useRef(location.pathname);
-
-  const onRoot = location.pathname === '/';
-  
-  // Сбрасываем флаг редиректа при изменении пути
-  useEffect(() => {
-    if (lastPathRef.current !== location.pathname) {
-      lastPathRef.current = location.pathname;
-      hasRedirectedRef.current = false;
-    }
-  }, [location.pathname]);
-  
-  // Используем useMemo для предотвращения пересчета на каждом рендере
-  const redirectTo = useMemo(() => {
-    // Если не готов или не авторизован - не редиректим
-    if (!ready || !isAuth || !role || !onRoot) {
-      return null;
-    }
-    
-    // Предотвращаем повторные редиректы
-    if (hasRedirectedRef.current) {
-      return null;
-    }
-    
-    const target = role === 'trainer'
-      ? ROUTES.TRAINER.DASHBOARD
-      : ROUTES.CLIENT.HOME;
-    
-    // Проверяем, что мы не уже на целевой странице
-    if (location.pathname === target) {
-      return null;
-    }
-    
-    // Устанавливаем флаг только если действительно нужно редиректить
-    hasRedirectedRef.current = true;
-    return target;
-  }, [ready, isAuth, role, onRoot, location.pathname]);
-
-  return (
-    <Routes location={location} key={location.pathname}>
-        <Route
-          path="/"
-          element={
-            redirectTo ? (
-              <Navigate to={redirectTo} replace />
-            ) : (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.3 }}
-              >
-                <StartPage />
-              </motion.div>
-            )
-          }
-        />
-        <Route
-          path="/auth/telegram"
-          element={
-            <AuthGuard>
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.3 }}
-              >
-                <TelegramAuth />
-              </motion.div>
-            </AuthGuard>
-          }
-        />
-        <Route
-          path="/auth/role-select"
-          element={
-            <Suspense fallback={<LoadingFallback />}>
-              <RoleSelectPage />
-            </Suspense>
-          }
-        />
-
-        <Route
-          path="/trainer/*"
-          element={
-            <TrainerRouteGuard>
-              <Layout>
-                <Suspense fallback={<LoadingFallback />}>
-                  <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.3 }}
-                  >
-                    <Routes>
-                      <Route index element={<TrainerDashboard />} />
-                      <Route path="add-client" element={<AddClientWizard />} />
-                      <Route path="assign/:clientId" element={<AssignWorkout />} />
-                      <Route path="client/:id" element={<ClientProfile />} />
-                    </Routes>
-                  </motion.div>
-                </Suspense>
-              </Layout>
-            </TrainerRouteGuard>
-          }
-        />
-
-        <Route
-          path="/client/*"
-          element={
-            <ClientRouteGuardByAuth>
-            <ClientRouteGuard>
-              <Layout>
-                <Suspense fallback={<LoadingFallback />}>
-                  <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.3 }}
-                  >
-                    <Routes>
-                      <Route 
-                        path="onboarding" 
-                        element={
-                          <div style={{ minHeight: '100vh' }}>
-                            <Onboarding />
-                          </div>
-                        } 
-                      />
-                      <Route index element={<ClientHome />} />
-                      <Route path="catalog" element={<Catalog />} />
-                      <Route path="muscle-map" element={<Navigate to={ROUTES.CLIENT.CATALOG + '?tab=map'} replace />} />
-                      <Route path="exercises" element={<Navigate to={ROUTES.CLIENT.CATALOG + '?tab=list'} replace />} />
-                      <Route path="exercises/:id" element={<ExerciseDetail />} />
-                      <Route path="today" element={<TodayWorkout />} />
-                      <Route path="progress" element={<Progress />} />
-                      <Route path="profile" element={<Profile />} />
-                      <Route path="history" element={<WorkoutHistory />} />
-                      <Route path="my-plan" element={<MyPlan />} />
-                      <Route path="programs" element={<Programs />} />
-                      <Route path="workout-generator" element={<WorkoutGenerator />} />
-                      <Route path="generator" element={<WorkoutGenerator />} />
-                    </Routes>
-                  </motion.div>
-                </Suspense>
-              </Layout>
-            </ClientRouteGuard>
-            </ClientRouteGuardByAuth>
-          }
-        />
-        </Routes>
-  );
-}
+import AuthStepLayout from './components/AuthStepLayout';
+import Dashboard from './components/Dashboard';
+import Spinner from './components/ui/Spinner';
 
 function App() {
   const [showSplash, setShowSplash] = useState(true);
+  const [isLoading, setIsLoading] = useState(true);
   const miniApp = isMiniApp();
+  const { user, login, logout } = useAuthStore();
 
   useEffect(() => {
     if (miniApp) setShowSplash(false);
   }, [miniApp]);
 
+  useEffect(() => {
+    const checkExistingProfile = async () => {
+      console.log("🔍 [AUTH DEBUG] Starting profile check...");
+
+      try {
+        // Получаем tg_id
+        const wa = getTelegramWebApp();
+        let tgId: string;
+
+        if (wa?.initDataUnsafe?.user) {
+          tgId = String(wa.initDataUnsafe.user.id);
+          console.log("📱 [AUTH DEBUG] TG Data:", wa.initDataUnsafe);
+        } else {
+          // Для ПК используем тестовый ID
+          tgId = '99999';
+          console.log("💻 [AUTH DEBUG] Using test ID for PC development:", tgId);
+        }
+
+        console.log("🔍 [AUTH DEBUG] Supabase Querying for tg_id:", tgId);
+        // Проверяем, есть ли профиль в Supabase
+        const profile = await fetchProfile(tgId);
+
+        if (profile) {
+          console.log("✅ [AUTH DEBUG] Profile found:", profile);
+          // Профиль найден - логиним пользователя
+          const userData = {
+            id: tgId,
+            firstName: profile.first_name || 'User',
+            username: profile.username || '',
+          };
+          login(userData, profile.role);
+          console.log("🚀 [AUTH DEBUG] User logged in, redirecting to Dashboard");
+        } else {
+          console.log("❌ [AUTH DEBUG] Profile NOT found, clearing stored auth and showing registration screen");
+          // Профиль не найден - очищаем сохраненное состояние и показываем регистрацию
+          logout();
+        }
+      } catch (error) {
+        console.error('❌ [AUTH DEBUG] Error checking profile:', error);
+      } finally {
+        console.log("🏁 [AUTH DEBUG] Profile check completed");
+        setIsLoading(false);
+      }
+    };
+
+    // Таймаут 3 секунды для защиты от вечной загрузки
+    const timeout = setTimeout(() => {
+      console.log("⏰ [AUTH DEBUG] Loading timeout reached, forcing setIsLoading(false)");
+      setIsLoading(false);
+    }, 3000);
+
+    checkExistingProfile();
+
+    return () => clearTimeout(timeout);
+  }, [login, logout]);
+
+  // Показываем загрузку
+  if (isLoading) {
+    console.log("⏳ [AUTH DEBUG] Showing loading screen");
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900">
+        <div className="text-center">
+          <Spinner size="lg" />
+          <p className="mt-4 text-lg font-medium text-gray-400">
+            Загрузка данных OFT...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  console.log("🎯 [AUTH DEBUG] Rendering decision - user:", user ? "EXISTS" : "NULL");
+
   return (
     <>
       <MiniAppInit />
       <BrowserRouter>
-        <AuthInit />
         <div className="min-h-screen">
-          <Suspense fallback={<LoadingFallback />}>
-            <AppRoutes />
-          </Suspense>
+          {!user ? <AuthStepLayout /> : <Dashboard />}
           <ToastContainer />
         </div>
       </BrowserRouter>

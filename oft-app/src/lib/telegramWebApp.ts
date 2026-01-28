@@ -50,6 +50,17 @@ export interface TelegramWebApp {
   showConfirm: (message: string, callback: (confirmed: boolean) => void) => void;
   showAlert: (message: string) => void;
   initData?: string;
+  initDataUnsafe?: {
+    user?: {
+      id: number;
+      first_name: string;
+      last_name?: string;
+      username?: string;
+      photo_url?: string;
+    };
+    auth_date?: number;
+    hash?: string;
+  };
   isExpanded: boolean;
   platform: string;
 }

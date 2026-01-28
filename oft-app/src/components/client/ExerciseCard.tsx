@@ -121,7 +121,7 @@ export default function ExerciseCard({ exercise }: ExerciseCardProps) {
     
     // Хаптическая отдача
     if (window.Telegram?.WebApp?.HapticFeedback) {
-      window.Telegram.WebApp.HapticFeedback.impactOccurred('success');
+      window.Telegram.WebApp.HapticFeedback.impactOccurred('medium');
     }
 
     addToast({

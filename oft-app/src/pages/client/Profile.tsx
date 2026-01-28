@@ -55,7 +55,11 @@ export default function Profile() {
     appLogout();
     addToast({ type: 'info', message: 'Вы вышли из системы' });
     setShowLogoutConfirm(false);
-    navigate(ROUTES.HOME);
+    
+    // Очищаем все хранилища и перезагружаем
+    localStorage.clear();
+    sessionStorage.clear();
+    window.location.reload();
   };
 
   // Обработчик изменения противопоказаний
